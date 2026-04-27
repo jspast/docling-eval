@@ -22,6 +22,7 @@ from docling.datamodel.pipeline_options import (
 from docling.models.stages.table_structure.table_structure_model import (
     TableStructureModel,
 )
+from docling.utils.profiling import ProfilingItem, TimeRecorder
 from docling_core.types import DoclingDocument
 from docling_core.types.doc import DocItemLabel, TableCell, TableData, TableItem
 from docling_core.types.io import DocumentStream
@@ -120,6 +121,7 @@ class TableFormerPredictionProvider(BasePredictionProvider):
 
         updated = False
         pred_doc = None
+        timings = {}
 
         try:
             if record.mime_type == "application/pdf":
@@ -129,13 +131,13 @@ class TableFormerPredictionProvider(BasePredictionProvider):
                     )
 
                 # Process PDF
-                updated, pred_doc = self.tf_updater.replace_tabledata(
+                updated, pred_doc, timings = self.tf_updater.replace_tabledata(
                     copy.deepcopy(record.original.stream), record.ground_truth_doc
                 )
 
             elif record.mime_type == "image/png":
                 # Process image
-                updated, pred_doc = self.tf_updater.replace_tabledata_with_page_tokens(
+                updated, pred_doc, timings = self.tf_updater.replace_tabledata_with_page_tokens(
                     record.ground_truth_doc,
                     record.ground_truth_page_images,
                 )
@@ -161,7 +163,7 @@ class TableFormerPredictionProvider(BasePredictionProvider):
                 deep=True
             )  # Use copy of ground truth as fallback
 
-        pred_record = self.create_dataset_record_with_prediction(record, pred_doc, None)
+        pred_record = self.create_dataset_record_with_prediction(record, pred_doc, timings=timings)
         pred_record.status = status
         return pred_record
 
@@ -279,7 +281,7 @@ class TableFormerUpdater:
         self,
         pdf_path: Union[Path, BytesIO],
         true_doc: DoclingDocument,
-    ) -> Tuple[bool, DoclingDocument]:
+    ) -> Tuple[bool, DoclingDocument, dict[str, ProfilingItem]]:
         """
         Replace table data in document with predictions from TableFormer.
 
@@ -288,7 +290,7 @@ class TableFormerUpdater:
             true_doc: Document with ground truth tables
 
         Returns:
-            Tuple of (success, updated_document)
+            Tuple of (success, updated_document, timings)
         """
         # Make a deep copy of the document
         pred_doc = true_doc.model_copy(deep=True)
@@ -297,7 +299,7 @@ class TableFormerUpdater:
         input_doc = get_input_document(pdf_path)
         if not input_doc.valid:
             _log.error("Could not parse PDF file")
-            return False, pred_doc
+            return False, pred_doc, {}
 
         conv_res = ConversionResult(input=input_doc)
         updated = False
@@ -343,7 +345,7 @@ class TableFormerUpdater:
                         if hasattr(page, "_backend") and page._backend is not None:
                             page._backend.unload()
 
-        return updated, pred_doc
+        return updated, pred_doc, conv_res.timings
 
     def _tf_predict_with_page_tokens(
         self,
@@ -409,7 +411,7 @@ class TableFormerUpdater:
         true_doc: DoclingDocument,
         true_page_images: List[Image.Image],
         page_tokens: Optional[PageTokens] = None,
-    ) -> Tuple[bool, DoclingDocument]:
+    ) -> Tuple[bool, DoclingDocument, dict[str, ProfilingItem]]:
         """
         Replace table data in document using page tokens and images.
 
@@ -419,16 +421,23 @@ class TableFormerUpdater:
             page_tokens: Optional page tokens
 
         Returns:
-            Tuple of (success, updated_document)
+            Tuple of (success, updated_document, timings)
         """
         # Make a deep copy of the document
         pred_doc = copy.deepcopy(true_doc)
         updated = False
+        timings: dict[str, ProfilingItem] = {}
+
+        class _TimingContainer:
+            def __init__(self, timings: dict[str, ProfilingItem]):
+                self.timings = timings
+
+        timing_container = _TimingContainer(timings)
 
         # Ensure document has exactly one page
         if len(pred_doc.pages) != 1:
             _log.error("Document must have exactly one page")
-            return False, pred_doc
+            return False, pred_doc, timings
 
         page_size = pred_doc.pages[1].size
 
@@ -463,11 +472,12 @@ class TableFormerUpdater:
                             )
 
                         # Predict table data
-                        table_data = self._tf_predict_with_page_tokens(
-                            page_image=page_image,
-                            page_tokens=page_tokens,
-                            table_bbox=table_bbox,
-                        )
+                        with TimeRecorder(timing_container, "table_structure"): # type: ignore
+                            table_data = self._tf_predict_with_page_tokens(
+                                page_image=page_image,
+                                page_tokens=page_tokens,
+                                table_bbox=table_bbox,
+                            )
 
                         # Update item data
                         item.data = table_data
@@ -476,4 +486,4 @@ class TableFormerUpdater:
                         _log.error(f"Error predicting table: {str(e)}")
                         raise
 
-        return updated, pred_doc
+        return updated, pred_doc, timings
