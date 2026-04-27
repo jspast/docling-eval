@@ -15,7 +15,7 @@ import PIL.Image
 from bs4 import BeautifulSoup  # type: ignore
 from datasets import Dataset, Features, load_dataset
 from datasets.iterable_dataset import IterableDataset
-from docling.backend.docling_parse_v4_backend import DoclingParseV4DocumentBackend
+from docling.backend.docling_parse_v4_backend import DoclingParseDocumentBackend
 from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 from docling.datamodel.base_models import InputFormat, Page
 from docling.datamodel.document import InputDocument
@@ -147,7 +147,7 @@ def write_datasets_info(
 
 
 def get_input_document(
-    file: Path | BytesIO, backend_t: Type[Any] = DoclingParseV4DocumentBackend
+    file: Path | BytesIO, backend_t: Type[Any] = DoclingParseDocumentBackend
 ) -> InputDocument:
     return InputDocument(
         path_or_stream=file,
