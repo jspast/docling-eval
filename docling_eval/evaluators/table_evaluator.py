@@ -395,6 +395,10 @@ class TableEvaluator(BaseEvaluator):
                 true_html: str = true_table.export_to_html(true_doc)
                 pred_html: str = pred_table.export_to_html(pred_doc)
 
+                # For fair evaluation
+                if pred_html == "":
+                    pred_html = "<table></table>"
+
                 # Submit table for evaluation
                 futures.append(
                     executor.submit(
